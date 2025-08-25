@@ -1,0 +1,170 @@
+# This workflow allows manual rebuilding of any specific commit
+# Useful for rebuilding historical commits with fixes or testing specific changes
+#
+# Usage:
+# 1. Go to Actions tab in GitHub
+# 2. Click "Rebuild Specific Commit" workflow
+# 3. Click "Run workflow"
+# 4. Enter the commit SHA (e.g., '95dd6ec' or full SHA)
+# 5. Optionally add a suffix for the artifact name
+# 6. Click "Run workflow"
+#
+# The workflow will:
+# - Checkout the specified commit
+# - Build the Mohist server
+# - Upload the built jar as an artifact
+#
+# Example commits to rebuild:
+# - 95dd6ec: Add PlayerPickItemEvent fix #3595
+
+name: Rebuild Specific Commit
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: 'Commit SHA to rebuild (full or short)'
+        required: true
+        default: '95dd6ec'
+        type: string
+      artifact_name_suffix:
+        description: 'Optional suffix for artifact name'
+        required: false
+        default: ''
+        type: string
+      fetch_from_upstream:
+        description: 'Fetch from upstream MohistMC repository'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Fetch full history to access any commit
+        
+    - name: Fetch from upstream if needed
+      if: ${{ github.event.inputs.fetch_from_upstream == 'true' }}
+      run: |
+        echo "Adding upstream remote and fetching all branches/tags..."
+        git remote add upstream https://github.com/MohistMC/Mohist.git || true
+        git fetch upstream --all --tags || echo "Warning: Could not fetch from upstream"
+        
+    - name: Checkout specific commit
+      run: |
+        echo "Checking out commit: ${{ github.event.inputs.commit_sha }}"
+        if git checkout ${{ github.event.inputs.commit_sha }}; then
+          echo "✅ Successfully checked out commit"
+          git log -1 --oneline
+        else
+          echo "❌ Failed to checkout commit. Trying with upstream prefix..."
+          # Try different branch prefixes
+          for remote in origin upstream; do
+            for branch in 1.20.1 main master; do
+              if git checkout $remote/$branch 2>/dev/null && git log --oneline | grep -q "${{ github.event.inputs.commit_sha }}"; then
+                echo "Found commit in $remote/$branch, checking out..."
+                git checkout ${{ github.event.inputs.commit_sha }}
+                break 2
+              fi
+            done
+          done || {
+            echo "Error: Commit ${{ github.event.inputs.commit_sha }} not found in any branch"
+            echo "Available recent commits:"
+            git log --oneline -10
+            exit 1
+          }
+        fi
+        
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+
+    - name: Setup Gradle
+      run: |
+        chmod +x ./gradlew
+        echo "Setting up Gradle and downloading dependencies..."
+        if ! timeout 600 ./gradlew setup packageLibraries; then
+          echo "❌ Setup failed. This might be due to network issues or missing dependencies."
+          echo "Common issues:"
+          echo "- MinecraftForge maven repository unavailable"
+          echo "- Network connectivity problems"
+          echo "- Missing dependencies for the specific commit"
+          echo ""
+          echo "Retrying with --refresh-dependencies..."
+          ./gradlew setup packageLibraries --refresh-dependencies || {
+            echo "❌ Setup failed after retry. Exiting."
+            exit 1
+          }
+        fi
+
+    - name: Build with Gradle Wrapper
+      run: |
+        echo "Building Mohist server jar..."
+        if ! timeout 900 ./gradlew mohistJar; then
+          echo "❌ Build failed. Checking for common issues..."
+          echo ""
+          echo "Build logs:"
+          find . -name "*.log" -type f -exec echo "=== {} ===" \; -exec tail -20 {} \; 2>/dev/null || true
+          echo ""
+          echo "Gradle daemon status:"
+          ./gradlew --status || true
+          exit 1
+        fi
+        echo "✅ Build completed successfully"
+        
+    - name: List build artifacts
+      run: |
+        echo "Searching for built server jars..."
+        find . -name "*-server.jar" -type f 2>/dev/null | while read jar; do
+          echo "Found: $jar ($(du -h "$jar" | cut -f1))"
+        done || echo "No server jars found"
+        
+        echo ""
+        echo "Build directory contents:"
+        find . -path "*/build/libs" -type d 2>/dev/null | while read dir; do
+          echo "=== $dir ==="
+          ls -la "$dir/" 2>/dev/null || echo "Directory not accessible"
+        done || echo "No build/libs directories found"
+
+    - name: Prepare artifact name
+      id: artifact_name
+      run: |
+        COMMIT_SHORT=$(echo "${{ github.event.inputs.commit_sha }}" | cut -c1-7)
+        SUFFIX="${{ github.event.inputs.artifact_name_suffix }}"
+        if [ -n "$SUFFIX" ]; then
+          ARTIFACT_NAME="Mohist-1.20.1-server-${COMMIT_SHORT}-${SUFFIX}"
+        else
+          ARTIFACT_NAME="Mohist-1.20.1-server-${COMMIT_SHORT}"
+        fi
+        echo "artifact_name=${ARTIFACT_NAME}" >> $GITHUB_OUTPUT
+        echo "commit_short=${COMMIT_SHORT}" >> $GITHUB_OUTPUT
+
+    - name: Upload Build Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.artifact_name.outputs.artifact_name }}
+        path: |
+          projects/mohist/build/libs/*-server.jar
+          build/libs/*-server.jar
+          **/build/libs/*-server.jar
+        if-no-files-found: warn
+        
+    - name: Print build summary
+      run: |
+        echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "**Commit:** ${{ github.event.inputs.commit_sha }} (${{ steps.artifact_name.outputs.commit_short }})" >> $GITHUB_STEP_SUMMARY
+        echo "**Artifact:** ${{ steps.artifact_name.outputs.artifact_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Build Status:** ✅ Success" >> $GITHUB_STEP_SUMMARY
+        
+        echo ""
+        echo "Commit details:"
+        git log -1 --pretty=format:"- **Author:** %an (%ae)%n- **Date:** %ad%n- **Message:** %s" --date=iso
