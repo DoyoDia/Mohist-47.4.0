@@ -35,6 +35,17 @@ Getting Help
   [MohistWiki](https://mohistmc.com/mohist/docs) (Here is everything you need related to Mohist)  
   [MohistWiki CN](https://www.mohistmc.cn/docs/mohist) (Here is everything you need related to Mohist)
 
+Rebuilding Historical Commits
+------
+
+This repository includes a GitHub Action workflow that allows you to rebuild any specific commit:
+
+* **Use case**: Rebuild commit `95dd6ec` (PlayerPickItemEvent fix) or any other historical commit
+* **How to use**: Go to Actions → "Rebuild Specific Commit" → Run workflow with commit SHA
+* **Documentation**: See [rebuild workflow guide](docs/rebuild-commit-workflow.md) or [中文文档](docs/rebuild-commit-workflow-zh.md)
+
+Example: To rebuild the PlayerPickItemEvent fix, use commit SHA `95dd6ec` in the workflow.
+
 Upstream Projects
 ------
 * [**MinecraftForge**](https://github.com/MinecraftForge/MinecraftForge.git) - mod support.
